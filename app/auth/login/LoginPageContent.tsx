@@ -6,37 +6,25 @@ import Link from "next/link";
 import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 import AuthCard from "@/src/components/AuthCard";
 import { useAuth } from "@/src/hooks/useAuth";
+import { useRouter } from "next/navigation";
 
 export default function LoginPageContent() {
   const [form, setForm] = useState({ email: "", password: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
-  const { getToken } = useAuth();
+  const { login } = useAuth();
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("http://localhost:4000/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-        credentials: "include",
-      });
+      await login(form.email, form.password);  // ✅ uses context
+      setMessage("✅ Logged in!");
 
-      const data = await res.json();
-
-      if (res.ok) {
-        setMessage(
-          "✅ Logged in! Refresh token stored securely in HttpOnly cookie."
-        );
-
-        const accessToken = await getToken();
-        console.log("Access token (in memory):", accessToken?.slice(0, 6) + "...");
-      } else {
-        setMessage("❌ " + data.error);
-      }
+      // ✅ redirect to dashboard/chat
+      router.push("/chat"); 
     } catch (err) {
-      setMessage("⚠️ Something went wrong.");
+      setMessage("❌ Invalid email or password");
       console.error(err);
     }
   };

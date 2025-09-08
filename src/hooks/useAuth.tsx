@@ -1,17 +1,21 @@
 // src/hooks/useAuth.tsx
-import { useState, useCallback, createContext, useContext } from "react";
+import { useState, useCallback, createContext, useContext, useEffect } from "react";
 
 type AuthContextType = {
   token: string | null;
+  username: string | null;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   getToken: () => Promise<string | null>;
+  loading: boolean;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   // ⏳ Decode token to check expiry
   const isTokenExpired = (token: string) => {
@@ -23,36 +27,60 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
+  // 🔎 Centralized JWT decode
+  const decodeAndSetUser = (accessToken: string) => {
+    try {
+      const payload = JSON.parse(atob(accessToken.split(".")[1]));
+      console.log("🔑 Full JWT:", accessToken);
+      console.log("📦 Decoded JWT payload:", payload);
+      setUsername(payload.username || null);
+    } catch (err) {
+      console.error("❌ Failed to decode JWT:", err);
+      setUsername(null);
+    }
+  };
+
   // 🔐 Login → store access token
   const login = async (email: string, password: string) => {
     const res = await fetch("http://localhost:4000/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
-      credentials: "include", // ✅ send/receive refresh cookie
+      credentials: "include",
     });
     if (!res.ok) throw new Error("Login failed");
 
     const data = await res.json();
     setToken(data.accessToken);
+    decodeAndSetUser(data.accessToken); // ✅ single decode
   };
 
   // 🚪 Logout
-  const logout = () => {
-    setToken(null);
-    // optionally call /auth/logout to clear cookie
+  const logout = async () => {
+    try {
+      await fetch("http://localhost:4000/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (err) {
+      console.error("Logout failed:", err);
+    } finally {
+      setToken(null);
+      setUsername(null);
+    }
   };
 
   // 🔄 Refresh access token
   const refresh = useCallback(async () => {
     const res = await fetch("http://localhost:4000/auth/refresh", {
       method: "POST",
-      credentials: "include", // ✅ send refresh cookie
+      credentials: "include",
     });
     if (!res.ok) return null;
 
     const data = await res.json();
     setToken(data.accessToken);
+    decodeAndSetUser(data.accessToken); // ✅ single decode
     return data.accessToken;
   }, []);
 
@@ -64,9 +92,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return await refresh();
   }, [token, refresh]);
 
+  // 🛠 Init auth on mount → try to refresh immediately
+  useEffect(() => {
+    const initAuth = async () => {
+      const newToken = await getToken();
+      if (newToken) {
+        decodeAndSetUser(newToken); // ✅ single decode
+      }
+      setLoading(false);
+    };
+    initAuth();
+  }, [getToken]);
+
   return (
-    <AuthContext.Provider value={{ token, login, logout, getToken }}>
-      {children}
+    <AuthContext.Provider
+      value={{ token, username, login, logout, getToken, loading }}
+    >
+      {!loading && children}
     </AuthContext.Provider>
   );
 };

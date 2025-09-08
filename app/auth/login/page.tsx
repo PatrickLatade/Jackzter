@@ -1,13 +1,15 @@
-// app/auth/login/page.tsx
 "use client";
 
 import { AuthProvider } from "@/src/hooks/useAuth";
+import RedirectIfAuth from "@/src/components/RedirectifAuth";
 import LoginPageContent from "./LoginPageContent";
 
 export default function LoginPage() {
   return (
     <AuthProvider>
-      <LoginPageContent />
+      <RedirectIfAuth>
+        <LoginPageContent />
+      </RedirectIfAuth>
     </AuthProvider>
   );
 }

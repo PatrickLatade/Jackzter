@@ -1,22 +1,14 @@
-"use client"; // enables React hooks in this component
+"use client";
 
-import { useEffect, useState } from "react";
+import { AuthProvider } from "@/src/hooks/useAuth";
+import RedirectIfAuth from "@/src/components/RedirectifAuth";
 
-export default function Home() {
-  const [message, setMessage] = useState("Loading...");
-
-  useEffect(() => {
-    // Call backend API
-    fetch("http://localhost:4000/")
-      .then((res) => res.text())
-      .then((data) => setMessage(data))
-      .catch((err) => setMessage("Error: " + err.message));
-  }, []);
-
+export default function HomeRedirect() {
   return (
-    <main style={{ padding: "2rem" }}>
-      <h1>Messenger App</h1>
-      <p>Backend says: {message}</p>
-    </main>
+    <AuthProvider>
+      <RedirectIfAuth>
+        <div className="p-4">Redirecting...</div>
+      </RedirectIfAuth>
+    </AuthProvider>
   );
 }

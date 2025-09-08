@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useAuth } from "@/src/hooks/useAuth";
+import { useRouter } from "next/navigation";
 
 interface ChatPreview {
   id: string;
@@ -24,14 +26,45 @@ export default function ChatPage() {
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+  const { username, logout } = useAuth();
+  const router = useRouter();
 
-    const closeDropdown = () => {
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const handleLogout = async () => {
+    await logout();
+    router.push("/auth/login"); // ✅ redirect to login
+  };
+
+  const closeDropdown = () => {
     setIsClosing(true);
     setTimeout(() => {
       setDropdownOpen(false);
       setIsClosing(false);
     }, 200); // match animation duration
   };
+
+  // ✅ Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node)
+      ) {
+        if (dropdownOpen) closeDropdown();
+      }
+    };
+
+    if (dropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    } else {
+      document.removeEventListener("mousedown", handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [dropdownOpen]);
 
   const [messages] = useState<Message[]>([
     { id: "m1", sender: "friend", text: "Hey! How are you?" },
@@ -45,31 +78,53 @@ export default function ChatPage() {
       {/* Top navbar */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-foreground/20 bg-background">
         <h1 className="text-xl font-bold text-brand-red">JackZer</h1>
-        <div className="relative">
-          {/* Avatar button */}
-        <button
-            onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
-            className="w-10 h-10 rounded-full bg-brand-red text-brand-white flex items-center justify-center font-bold
-                    transition transform hover:bg-brand-red/90 hover:scale-105 hover:shadow-lg hover:shadow-brand-red/40 
-                    active:scale-95 cursor-pointer"
-        >
-            U
-        </button>
 
-        {/* Dropdown */}
-        {(dropdownOpen || isClosing) && (
-        <div
-        className={`absolute right-0 mt-2 w-40 bg-background border border-foreground/20 
-                    rounded-lg shadow-lg origin-top-right transform transition-all duration-200 ease-out
-                    z-50 ${isClosing ? "animate-dropdown-close" : "animate-dropdown"}`}
-        >
-        <ul className="text-sm">
-            <li className="px-4 py-2 hover:bg-foreground/10 cursor-pointer">Profile</li>
-            <li className="px-4 py-2 hover:bg-foreground/10 cursor-pointer">Settings</li>
-            <li className="px-4 py-2 hover:bg-foreground/10 cursor-pointer text-brand-red">Logout</li>
-        </ul>
-        </div>
-        )}
+        <div className="flex items-center gap-3">
+          <span className="font-medium">
+            {username ? `Welcome ${username}` : "Welcome"}
+          </span>
+
+          {/* Avatar + dropdown wrapper */}
+          <div className="relative inline-block text-left" ref={dropdownRef}>
+            {/* Avatar button */}
+            <button
+              onClick={() =>
+                dropdownOpen ? closeDropdown() : setDropdownOpen(true)
+              }
+              className="w-10 h-10 rounded-full bg-brand-red text-brand-white flex items-center justify-center font-bold
+                         transition transform hover:bg-brand-red/90 hover:scale-105 hover:shadow-lg hover:shadow-brand-red/40 
+                         active:scale-95 cursor-pointer"
+            >
+              U
+            </button>
+
+            {/* Dropdown */}
+            {(dropdownOpen || isClosing) && (
+              <div
+                className={`absolute right-0 z-50 mt-2 w-40 rounded-lg bg-background border border-foreground/20 
+                            shadow-lg origin-top-right transition-all duration-200 ease-out
+                            ${isClosing ? "animate-dropdown-close" : "animate-dropdown"}`}
+                style={{
+                  top: "100%", // ✅ always directly below avatar
+                }}
+              >
+                <ul className="text-sm">
+                  <li className="px-4 py-2 hover:bg-foreground/10 cursor-pointer">
+                    Profile
+                  </li>
+                  <li className="px-4 py-2 hover:bg-foreground/10 cursor-pointer">
+                    Settings
+                  </li>
+                  <li
+                    onClick={handleLogout}
+                    className="px-4 py-2 hover:bg-foreground/10 cursor-pointer text-brand-red"
+                  >
+                    Logout
+                  </li>
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
