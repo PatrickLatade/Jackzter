@@ -31,8 +31,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const decodeAndSetUser = (accessToken: string) => {
     try {
       const payload = JSON.parse(atob(accessToken.split(".")[1]));
-      console.log("🔑 Full JWT:", accessToken);
-      console.log("📦 Decoded JWT payload:", payload);
       setUsername(payload.username || null);
     } catch (err) {
       console.error("❌ Failed to decode JWT:", err);
