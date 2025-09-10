@@ -12,7 +12,7 @@ interface ProtectedLayoutProps {
 
 // This component now safely uses useAuth() inside AuthProvider
 function LayoutContent({ children }: { children: ReactNode }) {
-  const { username, logout } = useAuth();
+  const { user, logout } = useAuth();
   const router = useRouter();
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -58,7 +58,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
         </h1>
 
         <div className="flex items-center gap-3">
-          <span className="font-medium">{username ? `Welcome ${username}` : "Welcome"}</span>
+          <span className="font-medium">{user ? `Welcome ${user.username}` : "Welcome"}</span>
 
           <div className="relative inline-block text-left" ref={dropdownRef}>
             <button
@@ -81,6 +81,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
                   <li>
                     <Link
                       href="/profile"
+                      onClick={closeDropdown}
                       className="block px-4 py-2 hover:bg-foreground/10 cursor-pointer"
                     >
                       Profile

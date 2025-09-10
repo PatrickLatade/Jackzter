@@ -1,23 +1,37 @@
 // src/hooks/useAuth.tsx
 import { useState, useCallback, createContext, useContext, useEffect } from "react";
 
+type User = {
+  id: string;
+  username: string;
+  email: string;
+  profilePicture?: string;
+  age?: number;
+  birthday?: string;
+};
+
 type AuthContextType = {
   token: string | null;
-  username: string | null;
+  user: User | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   getToken: () => Promise<string | null>;
   loading: boolean;
+  updateUser: (updates: {
+  username?: string;
+  email?: string;
+  oldPassword?: string;
+  newPassword?: string;
+}) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
-  const [username, setUsername] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ⏳ Decode token to check expiry
   const isTokenExpired = (token: string) => {
     try {
       const { exp } = JSON.parse(atob(token.split(".")[1]));
@@ -27,18 +41,58 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  // 🔎 Centralized JWT decode
-  const decodeAndSetUser = (accessToken: string) => {
+  //Update User
+  const updateUser = async (updates: {
+    username?: string;
+    email?: string;
+    oldPassword?: string;
+    newPassword?: string;
+  }) => {
     try {
-      const payload = JSON.parse(atob(accessToken.split(".")[1]));
-      setUsername(payload.username || null);
+      const accessToken = await getToken();
+      if (!accessToken) throw new Error("No valid token");
+
+      const res = await fetch("http://localhost:4000/auth/me", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(updates),
+        credentials: "include",
+      });
+
+      const data = await res.json();   // ✅ read once
+
+      if (!res.ok) {
+        throw new Error(data.errors?.[0]?.message || "Failed to update user");
+      }
+
+      setUser(data.user);
     } catch (err) {
-      console.error("❌ Failed to decode JWT:", err);
-      setUsername(null);
+      console.error("❌ Update user failed:", err);
+      throw err;
     }
   };
 
-  // 🔐 Login → store access token
+  // 🔎 Fetch user profile from backend
+  const fetchUserProfile = async (accessToken: string) => {
+    try {
+      const res = await fetch("http://localhost:4000/auth/me", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch user profile");
+
+      const data = await res.json();
+      setUser(data);
+    } catch (err) {
+      console.error("❌ Failed to fetch user profile:", err);
+      setUser(null);
+    }
+  };
+
+  // 🔐 Login → store access token & fetch profile
   const login = async (email: string, password: string) => {
     const res = await fetch("http://localhost:4000/auth/login", {
       method: "POST",
@@ -50,7 +104,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const data = await res.json();
     setToken(data.accessToken);
-    decodeAndSetUser(data.accessToken); // ✅ single decode
+    await fetchUserProfile(data.accessToken);
   };
 
   // 🚪 Logout
@@ -64,7 +118,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       console.error("Logout failed:", err);
     } finally {
       setToken(null);
-      setUsername(null);
+      setUser(null);
     }
   };
 
@@ -78,7 +132,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const data = await res.json();
     setToken(data.accessToken);
-    decodeAndSetUser(data.accessToken); // ✅ single decode
+    await fetchUserProfile(data.accessToken);
     return data.accessToken;
   }, []);
 
@@ -90,12 +144,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return await refresh();
   }, [token, refresh]);
 
-  // 🛠 Init auth on mount → try to refresh immediately
+  // 🛠 Init auth on mount
   useEffect(() => {
     const initAuth = async () => {
       const newToken = await getToken();
       if (newToken) {
-        decodeAndSetUser(newToken); // ✅ single decode
+        await fetchUserProfile(newToken);
       }
       setLoading(false);
     };
@@ -104,7 +158,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ token, username, login, logout, getToken, loading }}
+      value={{ token, user, login, logout, getToken, updateUser, loading }}
     >
       {!loading && children}
     </AuthContext.Provider>
