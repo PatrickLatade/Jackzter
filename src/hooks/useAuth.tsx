@@ -1,14 +1,19 @@
 // src/hooks/useAuth.tsx
 import { useState, useCallback, createContext, useContext, useEffect } from "react";
 
+type UserProfile = {
+  age?: number;
+  birthday?: string;
+  profilePicture?: string;
+};
+
 type User = {
   id: string;
   username: string;
   email: string;
-  profilePicture?: string;
-  age?: number;
-  birthday?: string;
+  profile?: UserProfile; // 👈 nested profile object
 };
+
 
 type AuthContextType = {
   token: string | null;
@@ -18,11 +23,16 @@ type AuthContextType = {
   getToken: () => Promise<string | null>;
   loading: boolean;
   updateUser: (updates: {
-  username?: string;
-  email?: string;
-  oldPassword?: string;
-  newPassword?: string;
-}) => Promise<void>;
+    username?: string;
+    email?: string;
+    oldPassword?: string;
+    newPassword?: string;
+  }) => Promise<void>;
+  updateProfile: (updates: {
+    age?: number;
+    birthday?: string;
+    profilePicture?: string;
+  }) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -74,6 +84,41 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       throw err;
     }
   };
+
+  const updateProfile = async (updates: {
+  age?: number;
+  birthday?: string;
+  profilePicture?: string;
+}) => {
+  try {
+    const accessToken = await getToken();
+    if (!accessToken) throw new Error("No valid token");
+
+    const res = await fetch("http://localhost:4000/auth/me/profile", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(updates),
+      credentials: "include",
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to update profile");
+    }
+
+    // merge profile back into user
+    setUser((prev) =>
+      prev ? { ...prev, profile: data.profile } : prev
+    );
+  } catch (err) {
+    console.error("❌ Update profile failed:", err);
+    throw err;
+  }
+};
 
   // 🔎 Fetch user profile from backend
   const fetchUserProfile = async (accessToken: string) => {
@@ -158,7 +203,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ token, user, login, logout, getToken, updateUser, loading }}
+      value={{ token, user, login, logout, getToken, updateUser, updateProfile, loading }}
     >
       {!loading && children}
     </AuthContext.Provider>
