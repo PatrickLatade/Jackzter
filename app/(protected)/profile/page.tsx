@@ -427,7 +427,7 @@ export default function ProfilePage() {
 
             <button
               type="submit"
-              className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+              className="px-4 py-2 rounded-md bg-brand-red text-white hover:bg-blue-700"
             >
               Save Personal Info
             </button>

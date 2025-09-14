@@ -64,10 +64,18 @@ function LayoutContent({ children }: { children: ReactNode }) {
             <button
               onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
               className="w-10 h-10 rounded-full bg-brand-red text-brand-white flex items-center justify-center font-bold
-                         transition transform hover:bg-brand-red/90 hover:scale-105 hover:shadow-lg hover:shadow-brand-red/40 
-                         active:scale-95 cursor-pointer"
+                        transition transform hover:bg-brand-red/90 hover:scale-105 hover:shadow-lg hover:shadow-brand-red/40 
+                        active:scale-95 cursor-pointer overflow-hidden"
             >
-              U
+            {user?.profile?.profilePicture ? (
+              <img
+                src={user.profile.profilePicture}
+                alt="Profile"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              (user?.username?.[0]?.toUpperCase() || "U")
+            )}
             </button>
 
             {(dropdownOpen || isClosing) && (
