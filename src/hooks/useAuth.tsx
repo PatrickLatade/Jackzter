@@ -11,9 +11,9 @@ type User = {
   id: string;
   username: string;
   email: string;
+  uniqueId: string;
   profile?: UserProfile; // 👈 nested profile object
 };
-
 
 type AuthContextType = {
   token: string | null;
@@ -22,13 +22,11 @@ type AuthContextType = {
   logout: () => Promise<void>;
   getToken: () => Promise<string | null>;
   loading: boolean;
-  updateUser: (updates: {
+  updateMe: (updates: {
     username?: string;
     email?: string;
     oldPassword?: string;
     newPassword?: string;
-  }) => Promise<void>;
-  updateProfile: (updates: {
     age?: number;
     birthday?: string;
     profilePicture?: string;
@@ -51,12 +49,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  //Update User
-  const updateUser = async (updates: {
+  // -------------------- UPDATE ME --------------------
+  const updateMe = async (updates: {
     username?: string;
     email?: string;
     oldPassword?: string;
     newPassword?: string;
+    age?: number;
+    birthday?: string;
+    profilePicture?: string;
   }) => {
     try {
       const accessToken = await getToken();
@@ -72,55 +73,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         credentials: "include",
       });
 
-      const data = await res.json();   // ✅ read once
+      const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.errors?.[0]?.message || "Failed to update user");
+        throw new Error(data.errors?.[0]?.message || data.error || "Failed to update profile");
       }
 
-      setUser(data.user);
+      setUser(data.user); // backend returns full updated user object
     } catch (err) {
-      console.error("❌ Update user failed:", err);
+      console.error("❌ Update failed:", err);
       throw err;
     }
   };
 
-  const updateProfile = async (updates: {
-  age?: number;
-  birthday?: string;
-  profilePicture?: string;
-}) => {
-  try {
-    const accessToken = await getToken();
-    if (!accessToken) throw new Error("No valid token");
-
-    const res = await fetch("http://localhost:4000/auth/me/profile", {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(updates),
-      credentials: "include",
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "Failed to update profile");
-    }
-
-    // merge profile back into user
-    setUser((prev) =>
-      prev ? { ...prev, profile: data.profile } : prev
-    );
-  } catch (err) {
-    console.error("❌ Update profile failed:", err);
-    throw err;
-  }
-};
-
-  // 🔎 Fetch user profile from backend
+  // -------------------- FETCH USER --------------------
   const fetchUserProfile = async (accessToken: string) => {
     try {
       const res = await fetch("http://localhost:4000/auth/me", {
@@ -137,7 +103,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  // 🔐 Login → store access token & fetch profile
+  // -------------------- LOGIN --------------------
   const login = async (email: string, password: string) => {
     const res = await fetch("http://localhost:4000/auth/login", {
       method: "POST",
@@ -152,7 +118,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     await fetchUserProfile(data.accessToken);
   };
 
-  // 🚪 Logout
+  // -------------------- LOGOUT --------------------
   const logout = async () => {
     try {
       await fetch("http://localhost:4000/auth/logout", {
@@ -167,7 +133,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  // 🔄 Refresh access token
+  // -------------------- REFRESH --------------------
   const refresh = useCallback(async () => {
     const res = await fetch("http://localhost:4000/auth/refresh", {
       method: "POST",
@@ -181,7 +147,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data.accessToken;
   }, []);
 
-  // 🔑 Get token (refresh if expired)
   const getToken = useCallback(async () => {
     if (token && !isTokenExpired(token)) {
       return token;
@@ -189,13 +154,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return await refresh();
   }, [token, refresh]);
 
-  // 🛠 Init auth on mount
   useEffect(() => {
     const initAuth = async () => {
       const newToken = await getToken();
-      if (newToken) {
-        await fetchUserProfile(newToken);
-      }
+      if (newToken) await fetchUserProfile(newToken);
       setLoading(false);
     };
     initAuth();
@@ -203,7 +165,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ token, user, login, logout, getToken, updateUser, updateProfile, loading }}
+      value={{ token, user, login, logout, getToken, updateMe, loading }}
     >
       {!loading && children}
     </AuthContext.Provider>

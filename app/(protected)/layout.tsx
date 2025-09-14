@@ -17,6 +17,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+  const [copied, setCopied] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const handleLogout = async () => {
@@ -30,6 +31,14 @@ function LayoutContent({ children }: { children: ReactNode }) {
       setDropdownOpen(false);
       setIsClosing(false);
     }, 200);
+  };
+
+  const handleCopy = () => {
+    if (user?.uniqueId) {
+      navigator.clipboard.writeText(user.uniqueId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1000); // hide after 1s
+    }
   };
 
   useEffect(() => {
@@ -58,7 +67,34 @@ function LayoutContent({ children }: { children: ReactNode }) {
         </h1>
 
         <div className="flex items-center gap-3">
-          <span className="font-medium">{user ? `Welcome ${user.username}` : "Welcome"}</span>
+          <div className="relative group">
+            <span
+              className="font-medium cursor-pointer"
+              onClick={handleCopy}
+            >
+              {user ? `Welcome, ${user.username}` : "Welcome"}
+            </span>
+
+            {/* Hover tooltip: show uniqueId */}
+            {user?.uniqueId && !copied && (
+              <span
+                className="absolute left-1/2 -translate-x-1/2 mt-1
+                          hidden group-hover:block px-2 py-1 text-xs text-white bg-black rounded-md shadow-lg z-50"
+              >
+                {user.uniqueId}
+              </span>
+            )}
+
+            {/* Click feedback tooltip */}
+            {copied && (
+              <span
+                className="absolute left-1/2 -translate-x-1/2 mt-1
+                          px-2 py-1 text-xs text-white bg-green-600 rounded-md shadow-lg z-50 animate-fade-out"
+              >
+                Copied!
+              </span>
+            )}
+          </div>
 
           <div className="relative inline-block text-left" ref={dropdownRef}>
             <button
