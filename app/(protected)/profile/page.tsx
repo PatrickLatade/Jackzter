@@ -75,6 +75,12 @@ export default function ProfilePage() {
     setErrors({});
     setError("");
 
+    // ✅ Username validation
+    if (/\s/.test(form.username)) {
+      setErrors({ username: "Username cannot contain spaces" });
+      return;
+    }
+
     if (requiresPassword && !form.oldPassword.trim()) {
       setErrors({ oldPassword: "Current password is required" });
       return;
@@ -82,7 +88,7 @@ export default function ProfilePage() {
 
     try {
       await updateMe({
-        username: form.username,
+        username: form.username.trim(),
         email: form.email,
         oldPassword: form.oldPassword || undefined,
         newPassword: form.newPassword || undefined,
@@ -92,10 +98,22 @@ export default function ProfilePage() {
       });
       alert("✅ Profile updated!");
       setForm((prev) => ({ ...prev, oldPassword: "", newPassword: "" }));
-    } catch (err: unknown) {
-      if (err instanceof Error) setError(err.message);
-      else setError("Something went wrong updating profile");
-    }
+      } catch (err: unknown) {
+        // If your updateMe() throws with a JSON { error: "..." }
+        if (err instanceof Error) {
+          const message = err.message;
+
+          if (message.includes("Username")) {
+            setErrors({ username: message });
+          } else if (message.includes("Email")) {
+            setErrors({ email: message });
+          } else {
+            setError(message); // generic error fallback
+          }
+        } else {
+          setError("Something went wrong updating profile");
+        }
+      }
   };
 
   const DatePickerInput = forwardRef<HTMLInputElement, CustomInputProps>(
@@ -164,8 +182,13 @@ export default function ProfilePage() {
               name="username"
               value={form.username}
               onChange={handleChange}
-              className="w-full rounded-md border px-3 py-2"
+              className={`w-full rounded-md border px-3 py-2 ${
+                  errors.username ? "border-red-500" : ""
+                }`}
             />
+          {errors.username && (
+            <p className="text-red-500 text-sm mt-1">{errors.username}</p>
+          )}
           </div>
 
           <div>
@@ -177,6 +200,9 @@ export default function ProfilePage() {
               onChange={handleChange}
               className="w-full rounded-md border px-3 py-2"
             />
+            {errors.email && (
+              <p className="text-red-500 text-sm mt-1">{errors.email}</p>
+            )}
           </div>
 
           <div>
