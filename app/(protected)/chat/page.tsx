@@ -41,7 +41,6 @@
       { id: "m4", sender: "me", text: "Sure, let’s do it!" },
     ]);
 
-    const [search, setSearch] = useState("");
     const [view, setView] = useState<"chats" | "friends" | "requests">("chats");
     const [chatSearch, setChatSearch] = useState("");
     const [friendSearch, setFriendSearch] = useState("");
