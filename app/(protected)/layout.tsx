@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "@/src/hooks/useAuth";
 import ProtectedRoute from "@/src/components/ProtectedRoute";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Avatar from "@/src/components/Avatar";
 
 interface ProtectedLayoutProps {
   children: ReactNode;
@@ -103,15 +104,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
                         transition transform hover:bg-brand-red/90 hover:scale-105 hover:shadow-lg hover:shadow-brand-red/40 
                         active:scale-95 cursor-pointer overflow-hidden"
             >
-            {user?.profile?.profilePicture ? (
-              <img
-                src={user.profile.profilePicture}
-                alt="Profile"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              (user?.username?.[0]?.toUpperCase() || "U")
-            )}
+            <Avatar src={user?.profile?.profilePicture} username={user?.username || "User"} />
             </button>
 
             {(dropdownOpen || isClosing) && (
