@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ChatBubbleBottomCenterIcon,
   UserGroupIcon,
@@ -11,6 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useAuth } from "@/src/hooks/useAuth";
 import Avatar from "@/src/components/Avatar";
+import io from "socket.io-client";
 
 interface ChatPreview {
   id: string;
@@ -28,9 +29,16 @@ interface FriendProfile {
   id: number;
   username: string;
   uniqueId: string;
+  isOnline?: boolean;
   profile?: {
     profilePicture?: string;
   };
+}
+
+// New interface to track friend statuses separately
+interface FriendStatus {
+  userId: number;
+  isOnline: boolean;
 }
 
 // Updated interface for search results
@@ -53,9 +61,9 @@ export default function ChatPage() {
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
   const [messages] = useState<Message[]>([
     { id: "m1", sender: "friend", text: "Hey! How are you?" },
-    { id: "m2", sender: "me", text: "I’m good, thanks. You?" },
+    { id: "m2", sender: "me", text: "I'm good, thanks. You?" },
     { id: "m3", sender: "friend", text: "Doing great! Want to hang out tomorrow?" },
-    { id: "m4", sender: "me", text: "Sure, let’s do it!" },
+    { id: "m4", sender: "me", text: "Sure, let's do it!" },
   ]);
 
   const [view, setView] = useState<"chats" | "friends" | "requests">("chats");
@@ -65,6 +73,8 @@ export default function ChatPage() {
   const [loadingFriends, setLoadingFriends] = useState(false);
   const [friendsList, setFriendsList] = useState<FriendProfile[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
+  type SocketInstance = ReturnType<typeof io>;
+  const socketRef = useRef<SocketInstance | null>(null);
   const { getToken, user } = useAuth();
 
   // Filtered chats based on search input
@@ -72,6 +82,22 @@ export default function ChatPage() {
     chat.name.toLowerCase().includes(chatSearch.toLowerCase()) ||
     chat.id.includes(chatSearch)
   );
+
+  // Use useCallback to prevent recreating this function on every render
+  const updateFriendStatus = useCallback((userId: number, isOnline: boolean) => {
+    setFriendsList(prev => prev.map(friend => 
+      friend.id === userId 
+        ? { ...friend, isOnline } 
+        : friend
+    ));
+  }, []);
+
+  const setInitialFriendStatuses = useCallback((statuses: FriendStatus[]) => {
+    setFriendsList(prev => prev.map(friend => {
+      const status = statuses.find(s => s.userId === friend.id);
+      return status ? { ...friend, isOnline: status.isOnline } : friend;
+    }));
+  }, []);
 
   // Friend actions
   const handleSendRequest = async (toId: number) => {
@@ -122,7 +148,7 @@ export default function ChatPage() {
         // Add the new friend to the friends list
         const newFriend = requests.find((req) => req.id === requestId)?.from;
         if (newFriend) {
-          setFriendsList((prev) => [...prev, newFriend]);
+          setFriendsList((prev) => [...prev, { ...newFriend, isOnline: false }]);
         }
         console.log("Friend request accepted!");
       } else {
@@ -240,6 +266,50 @@ export default function ChatPage() {
     }
   }, [view, user]); // Refetch when view changes or user loads
 
+  // Socket - moved to separate effect and using callbacks to prevent stale closures
+  useEffect(() => {
+    const setupSocket = async () => {
+      const token = await getToken();
+      if (!token) return;
+
+      const socket = io("http://localhost:4000", {
+        auth: { token }, // 👈 passes JWT in handshake
+        transports: ["websocket"],
+      });
+
+      socketRef.current = socket;
+
+      // Friend goes online/offline - using the callback to prevent stale closures
+      socket.on("friend:status:update", updateFriendStatus);
+
+      // Initial statuses from backend - using the callback to prevent stale closures
+      socket.on("friends:initial:status", setInitialFriendStatuses);
+
+      socket.on("connect_error", (err: Error) => {
+        console.error("Socket connect error:", err.message);
+      });
+
+      socket.on("connect", () => {
+        console.log("Socket connected successfully");
+      });
+
+      socket.on("disconnect", () => {
+        console.log("Socket disconnected");
+      });
+    };
+
+    setupSocket();
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.off("friend:status:update");
+        socketRef.current.off("friends:initial:status");
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [getToken, updateFriendStatus, setInitialFriendStatuses]);
+
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* Sidebar */}
@@ -300,31 +370,39 @@ export default function ChatPage() {
               </li>
             ))}
 
-            {view === "friends" &&
-              (friendsList.length > 0 ? (
-                friendsList.map((friend) => (
-                  <li
-                    key={friend.id}
-                    className="flex items-center gap-3 p-3.5 rounded-xl transition-all hover:bg-foreground/10 hover:shadow-sm"
-                  >
+          {view === "friends" &&
+            (friendsList.length > 0 ? (
+              friendsList.map((friend) => (
+                <li
+                  key={friend.id}
+                  className="flex items-center gap-3 p-3.5 rounded-xl transition-all hover:bg-foreground/10 hover:shadow-sm"
+                >
+                  <div className="relative">
                     <Avatar
                       src={friend.profile?.profilePicture}
                       username={friend.username}
                       size="w-10 h-10"
                     />
-                    <div className="flex flex-col overflow-hidden">
-                      <span className="font-semibold">{friend.username}</span>
-                      <span className="text-sm truncate text-foreground/70">
-                        @{friend.uniqueId}
-                      </span>
-                    </div>
-                  </li>
-                ))
-              ) : (
-                <li className="text-sm text-foreground/70 text-center py-4">
-                  No friends yet. Search for users to add!
+                    {/* Online/Offline dot */}
+                    <span
+                      className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-background transition-colors ${
+                        friend.isOnline ? "bg-green-500" : "bg-gray-400"
+                      }`}
+                    />
+                  </div>
+                  <div className="flex flex-col overflow-hidden">
+                    <span className="font-semibold">{friend.username}</span>
+                    <span className="text-sm truncate text-foreground/70">
+                      @{friend.uniqueId}
+                    </span>
+                  </div>
                 </li>
-              ))}
+              ))
+            ) : (
+              <li className="text-sm text-foreground/70 text-center py-4">
+                No friends yet. Search for users to add!
+              </li>
+            ))}
 
           {view === "requests" &&
             (requests.length > 0 ? (

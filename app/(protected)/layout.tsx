@@ -3,6 +3,7 @@
 import { ReactNode, useState, useRef, useEffect } from "react";
 import { AuthProvider, useAuth } from "@/src/hooks/useAuth";
 import ProtectedRoute from "@/src/components/ProtectedRoute";
+import { SocketProvider } from "@/src/context/SocketContext";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Avatar from "@/src/components/Avatar";
@@ -148,7 +149,9 @@ export default function ProtectedLayout({ children }: ProtectedLayoutProps) {
   return (
     <AuthProvider>
       <ProtectedRoute>
-        <LayoutContent>{children}</LayoutContent>
+        <SocketProvider> {/* ← wrap layout with SocketProvider */}
+          <LayoutContent>{children}</LayoutContent>
+        </SocketProvider>
       </ProtectedRoute>
     </AuthProvider>
   );
