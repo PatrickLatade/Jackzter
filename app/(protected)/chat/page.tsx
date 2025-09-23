@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   ChatBubbleBottomCenterIcon,
   UserGroupIcon,
@@ -11,7 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useAuth } from "@/src/hooks/useAuth";
 import Avatar from "@/src/components/Avatar";
-import io from "socket.io-client";
+import { useSocket } from "@/src/context/SocketContext";
 
 interface ChatPreview {
   id: string;
@@ -51,20 +51,28 @@ interface FriendRequest {
   from: FriendProfile;
 }
 
+interface SocketMessage {
+  id: string;
+  senderId: number;
+  receiverId: number;
+  content: string;
+}
+
+interface ReadMessageEvent {
+  messageId: string;
+  readerId: number;
+}
+
+interface TypingEvent {
+  fromId: number;
+}
+
 export default function ChatPage() {
-  const [chats] = useState<ChatPreview[]>([
-    { id: "1", name: "Alice", lastMessage: "See you tomorrow!" },
-    { id: "2", name: "Bob", lastMessage: "Let's catch up later." },
-    { id: "3", name: "Charlie", lastMessage: "Hey! Long time no chat." },
-  ]);
 
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
-  const [messages] = useState<Message[]>([
-    { id: "m1", sender: "friend", text: "Hey! How are you?" },
-    { id: "m2", sender: "me", text: "I'm good, thanks. You?" },
-    { id: "m3", sender: "friend", text: "Doing great! Want to hang out tomorrow?" },
-    { id: "m4", sender: "me", text: "Sure, let's do it!" },
-  ]);
+  const [messages, setMessages] = useState<Record<number, Message[]>>({});
+  const [draft, setDraft] = useState("");
+  const currentMessages = activeChat ? messages[Number(activeChat.id)] || [] : [];
 
   const [view, setView] = useState<"chats" | "friends" | "requests">("chats");
   const [chatSearch, setChatSearch] = useState("");
@@ -73,15 +81,102 @@ export default function ChatPage() {
   const [loadingFriends, setLoadingFriends] = useState(false);
   const [friendsList, setFriendsList] = useState<FriendProfile[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
-  type SocketInstance = ReturnType<typeof io>;
-  const socketRef = useRef<SocketInstance | null>(null);
+  const [chats, setChats] = useState<ChatPreview[]>([]);
+
+  const { socket } = useSocket(); // ✅ singleton socket
   const { getToken, user } = useAuth();
 
-  // Filtered chats based on search input
+  // NEW: Filtered chats based on search input
   const filteredChats = chats.filter((chat) =>
     chat.name.toLowerCase().includes(chatSearch.toLowerCase()) ||
     chat.id.includes(chatSearch)
   );
+
+    // --- NEW: Fetch chat history ---
+  const fetchMessages = useCallback(
+    async (friendId: number) => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+
+        const res = await fetch(`http://localhost:4000/messages/${friendId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          credentials: "include",
+        });
+        if (!res.ok) {
+          console.error("❌ Failed to fetch messages");
+          return;
+        }
+        const data: SocketMessage[] = await res.json();
+
+        setMessages((prev) => ({
+          ...prev,
+          [friendId]: data.map((m) => ({
+            id: m.id,
+            sender: m.senderId === Number(user?.id) ? "me" : "friend",
+            text: m.content,
+          })),
+        }));
+
+        // Update chats list preview
+        if (data.length > 0) {
+          const last = data[data.length - 1];
+          setChats((prev) => {
+            const exists = prev.find((c) => c.id === String(friendId));
+            if (exists) {
+              return prev.map((c) =>
+                c.id === String(friendId)
+                  ? { ...c, lastMessage: last.content }
+                  : c
+              );
+            } else {
+              const friend = friendsList.find((f) => f.id === friendId);
+              return [
+                ...prev,
+                {
+                  id: String(friendId),
+                  name: friend?.username || "Unknown",
+                  lastMessage: last.content,
+                },
+              ];
+            }
+          });
+        }
+      } catch (err) {
+        console.error("❌ Error fetching messages:", err);
+      }
+    },
+    [getToken, user, friendsList]
+  );
+
+  const handleSendMessage = () => {
+    if (!draft.trim() || !activeChat) return;
+    socket?.emit("message:send", {
+      toId: Number(activeChat.id),
+      content: draft,
+    });
+    setDraft(""); // clear input
+  };
+
+  const handleTyping = () => {
+    if (!activeChat) return;
+    socket?.emit("typing:start", { toId: Number(activeChat.id) });
+    // optional: debounce a "typing:stop" after 1s of no input
+  };
+
+  // add this function inside ChatPage
+const handleOpenChatFromFriend = (friend: FriendProfile) => {
+  // Create a ChatPreview object from the FriendProfile
+  const chatPreview: ChatPreview = {
+    id: String(friend.id),
+    name: friend.username,
+    lastMessage: "", // you can fill with latest message later if you store it
+  };
+
+  // Set as active chat and redirect back to chats view
+  setActiveChat(chatPreview);
+  setView("chats");
+};
 
   // Use useCallback to prevent recreating this function on every render
   const updateFriendStatus = useCallback((userId: number, isOnline: boolean) => {
@@ -185,7 +280,7 @@ export default function ChatPage() {
     }
   };
 
-  const fetchFriendsAndRequests = async () => {
+  const fetchFriendsAndRequests = useCallback(async () => {
     if (!user) return;
     try {
       const token = await getToken();
@@ -199,12 +294,13 @@ export default function ChatPage() {
           credentials: "include",
         }
       );
-      if (friendsRes.ok) {
-        const friendsData = await friendsRes.json();
-        setFriendsList(friendsData);
-      } else {
-        console.error("❌ Failed to fetch friends");
+      
+      if (!friendsRes.ok) {
+        throw new Error(`Failed to fetch friends: ${friendsRes.status}`);
       }
+      
+      const friendsData = await friendsRes.json();
+      setFriendsList(friendsData);
 
       // Fetch requests
       const requestsRes = await fetch(
@@ -214,16 +310,18 @@ export default function ChatPage() {
           credentials: "include",
         }
       );
-      if (requestsRes.ok) {
-        const requestsData = await requestsRes.json();
-        setRequests(requestsData);
-      } else {
-        console.error("❌ Failed to fetch requests");
+      
+      if (!requestsRes.ok) {
+        throw new Error(`Failed to fetch requests: ${requestsRes.status}`);
       }
+      
+      const requestsData = await requestsRes.json();
+      setRequests(requestsData);
     } catch (err) {
       console.error("❌ Failed to fetch friends and requests:", err);
+      // Add error state handling if needed
     }
-  };
+  }, [user, getToken]); // Add dependencies here
 
   // Effects
   useEffect(() => {
@@ -264,51 +362,84 @@ export default function ChatPage() {
     if (view === "friends" || view === "requests") {
       fetchFriendsAndRequests();
     }
-  }, [view, user]); // Refetch when view changes or user loads
+  }, [view, user, fetchFriendsAndRequests]); // Refetch when view changes or user loads
 
-  // Socket - moved to separate effect and using callbacks to prevent stale closures
   useEffect(() => {
-    const setupSocket = async () => {
-      const token = await getToken();
-      if (!token) return;
-
-      const socket = io("http://localhost:4000", {
-        auth: { token }, // 👈 passes JWT in handshake
-        transports: ["websocket"],
-      });
-
-      socketRef.current = socket;
-
-      // Friend goes online/offline - using the callback to prevent stale closures
-      socket.on("friend:status:update", updateFriendStatus);
-
-      // Initial statuses from backend - using the callback to prevent stale closures
-      socket.on("friends:initial:status", setInitialFriendStatuses);
-
-      socket.on("connect_error", (err: Error) => {
-        console.error("Socket connect error:", err.message);
-      });
-
-      socket.on("connect", () => {
-        console.log("Socket connected successfully");
-      });
-
-      socket.on("disconnect", () => {
-        console.log("Socket disconnected");
-      });
-    };
-
-    setupSocket();
-
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.off("friend:status:update");
-        socketRef.current.off("friends:initial:status");
-        socketRef.current.disconnect();
-        socketRef.current = null;
+    if (!activeChat) return;
+    const msgs = messages[Number(activeChat.id)] || [];
+    msgs.forEach((msg) => {
+      if (msg.sender === "friend") {
+        socket?.emit("message:read", { messageId: msg.id });
       }
+    });
+  }, [activeChat, messages]);
+
+  // Replace the entire previous useEffect with this
+  useEffect(() => {
+    if (!socket) return; // wait until the singleton is ready
+
+    // Subscribe to events
+    socket.on("friend:status:update", updateFriendStatus);
+    socket.on("friends:initial:status", setInitialFriendStatuses);
+
+    socket.on("connect_error", (err: Error) => {
+      console.error("Socket connect error:", err.message);
+    });
+
+    socket.on("connect", () => {
+      console.log("Socket connected successfully");
+    });
+
+    socket.on("message:read", ({ messageId, readerId }: ReadMessageEvent) => {
+      console.log(`Message ${messageId} read by ${readerId}`);
+    });
+
+    socket.on("typing:start", ({ fromId }: TypingEvent) => {
+      console.log(`User ${fromId} is typing...`);
+    });
+
+    socket.on("typing:stop", ({ fromId }: TypingEvent) => {
+      console.log(`User ${fromId} stopped typing.`);
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Socket disconnected");
+    });
+
+    socket.on("message:receive", (message: SocketMessage) => {
+      setMessages(prev => {
+        const chatMessages = prev[message.senderId] || [];
+        return {
+          ...prev,
+          [message.senderId]: [...chatMessages, { id: message.id, sender: "friend", text: message.content }],
+        };
+      });
+    });
+
+    socket.on("message:sent", (message: SocketMessage) => {
+      setMessages(prev => {
+        const chatMessages = prev[message.receiverId] || [];
+        return {
+          ...prev,
+          [message.receiverId]: [...chatMessages, { id: message.id, sender: "me", text: message.content }],
+        };
+      });
+    });
+
+    // Cleanup subscriptions on unmount
+    return () => {
+      socket.off("friend:status:update");
+      socket.off("friends:initial:status");
+      socket.off("connect_error");
+      socket.off("connect");
+      socket.off("message:read");
+      socket.off("typing:start");
+      socket.off("typing:stop");
+      socket.off("disconnect");
+      socket.off("message:receive");
+      socket.off("message:sent");
     };
-  }, [getToken, updateFriendStatus, setInitialFriendStatuses]);
+  }, [socket, updateFriendStatus, setInitialFriendStatuses]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -336,37 +467,44 @@ export default function ChatPage() {
         </h2>
         <ul className="space-y-2 flex-1 overflow-y-auto">
           {view === "chats" &&
-            filteredChats.map((chat) => (
-              <li
-                key={chat.id}
-                onClick={() => setActiveChat(chat)}
-                className={`flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all ${
-                  activeChat?.id === chat.id
-                    ? "bg-brand-red text-brand-white shadow-md border-l-4 border-brand-red"
-                    : "hover:bg-foreground/10 hover:shadow-sm"
-                }`}
-              >
-                <div
-                  className={`w-10 h-10 flex items-center justify-center rounded-full font-bold shadow-sm ${
+            (filteredChats.length > 0 ? ( // NEW: Added a check for filteredChats length
+              filteredChats.map((chat) => (
+                <li
+                  key={chat.id}
+                  onClick={() => setActiveChat(chat)}
+                  className={`flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all ${
                     activeChat?.id === chat.id
-                      ? "bg-brand-white text-brand-red"
-                      : "bg-foreground/20 text-foreground"
+                      ? "bg-brand-red text-brand-white shadow-md border-l-4 border-brand-red"
+                      : "hover:bg-foreground/10 hover:shadow-sm"
                   }`}
                 >
-                  {chat.name.charAt(0).toUpperCase()}
-                </div>
-                <div className="flex flex-col overflow-hidden">
-                  <span className="font-semibold">{chat.name}</span>
-                  <span
-                    className={`text-sm truncate ${
+                  <div
+                    className={`w-10 h-10 flex items-center justify-center rounded-full font-bold shadow-sm ${
                       activeChat?.id === chat.id
-                        ? "text-brand-white/80"
-                        : "text-foreground/70"
+                        ? "bg-brand-white text-brand-red"
+                        : "bg-foreground/20 text-foreground"
                     }`}
                   >
-                    {chat.lastMessage}
-                  </span>
-                </div>
+                    {chat.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex flex-col overflow-hidden">
+                    <span className="font-semibold">{chat.name}</span>
+                    <span
+                      className={`text-sm truncate ${
+                        activeChat?.id === chat.id
+                          ? "text-brand-white/80"
+                          : "text-foreground/70"
+                      }`}
+                    >
+                      {chat.lastMessage}
+                    </span>
+                  </div>
+                </li>
+              ))
+            ) : (
+              // NEW: Added a message for no chats found
+              <li className="text-sm text-foreground/70 text-center py-4">
+                No chats found.
               </li>
             ))}
 
@@ -375,7 +513,8 @@ export default function ChatPage() {
               friendsList.map((friend) => (
                 <li
                   key={friend.id}
-                  className="flex items-center gap-3 p-3.5 rounded-xl transition-all hover:bg-foreground/10 hover:shadow-sm"
+                  onClick={() => handleOpenChatFromFriend(friend)}   // 👈 added here
+                  className="flex items-center gap-3 p-3.5 rounded-xl transition-all hover:bg-foreground/10 hover:shadow-sm cursor-pointer"
                 >
                   <div className="relative">
                     <Avatar
@@ -459,6 +598,8 @@ export default function ChatPage() {
             { name: "requests", icon: InboxIcon },
           ].map(({ name, icon: Icon }) => {
             const isActive = view === name;
+            const hasPendingRequests = name === "requests" && requests.length > 0;
+
             return (
               <button
                 key={name}
@@ -471,11 +612,17 @@ export default function ChatPage() {
                   isActive ? "bg-foreground/5" : ""
                 }`}
               >
-                <Icon
-                  className={`w-6 h-6 mb-1 transition-colors ${
-                    isActive ? "text-brand-red" : "text-foreground/80"
-                  }`}
-                />
+                <div className="relative">
+                  <Icon
+                    className={`w-6 h-6 mb-1 transition-colors ${
+                      isActive ? "text-brand-red" : "text-foreground/80"
+                    }`}
+                  />
+                  {/* Pending requests indicator */}
+                  {hasPendingRequests && (
+                    <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-yellow-400 border-2 border-background" />
+                  )}
+                </div>
                 <span
                   className={`text-xs transition-colors ${
                     isActive ? "text-brand-red font-semibold" : "text-foreground/80"
@@ -502,7 +649,7 @@ export default function ChatPage() {
                   Chat with {activeChat.name}
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-3 p-2">
-                  {messages.map((msg) => (
+                  {currentMessages.map((msg) => (
                     <div
                       key={msg.id}
                       className={`flex ${msg.sender === "me" ? "justify-end" : "justify-start"}`}
@@ -522,11 +669,15 @@ export default function ChatPage() {
                 <div className="mt-4 flex">
                   <input
                     type="text"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
                     placeholder="Type a message..."
                     className="flex-1 border border-foreground/30 rounded-lg p-2 bg-background"
-                    disabled
                   />
-                  <button className="ml-2 px-4 py-2 bg-brand-red text-brand-white rounded-lg" disabled>
+                  <button
+                    onClick={handleSendMessage}
+                    className="ml-2 px-4 py-2 bg-brand-red text-brand-white rounded-lg"
+                  >
                     Send
                   </button>
                 </div>

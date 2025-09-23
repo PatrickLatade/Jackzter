@@ -1,9 +1,9 @@
 // src/context/SocketContext.tsx
 "use client";
 
-import React, { createContext, useContext, useEffect, useRef } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import type { SocketInstance } from "../lib/socket";
-import { createSocket } from "../lib/socket";
+import { getSocket, disconnectSocket } from "../lib/socket";
 import { useAuth } from "../hooks/useAuth";
 
 interface SocketContextValue {
@@ -14,24 +14,23 @@ const SocketContext = createContext<SocketContextValue>({ socket: null });
 
 export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
   const { getToken } = useAuth();
-  const socketRef = useRef<SocketInstance | null>(null);
+  const [socket, setSocket] = useState<SocketInstance | null>(null);
 
   useEffect(() => {
-    let isMounted = true;
+    let cancelled = false;
 
     const setupSocket = async () => {
       const token = await getToken();
-      if (!token || !isMounted) return;
+      if (!token || cancelled) return;
 
-      // create socket once
-      const newSocket = createSocket(token);
-      socketRef.current = newSocket;
+      const createdSocket = getSocket(token); // singleton
+      setSocket(createdSocket);
 
-      newSocket.on("connect", () => {
-        console.log("🔌 Connected:", newSocket.id);
+      createdSocket.on("connect", () => {
+        console.log("🔌 Connected:", createdSocket.id);
       });
 
-      newSocket.on("disconnect", (reason: string) => {
+      createdSocket.on("disconnect", (reason: string) => {
         console.log("❌ Disconnected:", reason);
       });
     };
@@ -39,18 +38,20 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     setupSocket();
 
     return () => {
-      isMounted = false;
-      socketRef.current?.disconnect();
+      cancelled = true;
+      if (socket) {
+        socket.removeAllListeners();
+        disconnectSocket(); // clears singleton
+        setSocket(null);
+      }
     };
-    // no socket in deps → prevents accidental disconnects
-  }, [getToken]);
+  }, [getToken, socket]);
 
   return (
-    <SocketContext.Provider value={{ socket: socketRef.current }}>
+    <SocketContext.Provider value={{ socket }}>
       {children}
     </SocketContext.Provider>
   );
 };
 
-// Hook for easy usage in components
 export const useSocket = () => useContext(SocketContext);
