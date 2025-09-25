@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ChatBubbleBottomCenterIcon,
   UserGroupIcon,
@@ -18,12 +18,15 @@ interface ChatPreview {
   name: string;
   lastMessage: string;
   profilePicture?: string;
+  hasUnreadMessages?: boolean;
 }
 
 interface Message {
   id: string;
   sender: "me" | "friend";
   text: string;
+  readAt?: string | null;
+  senderId?: number;
 }
 
 interface FriendProfile {
@@ -36,13 +39,11 @@ interface FriendProfile {
   };
 }
 
-// New interface to track friend statuses separately
 interface FriendStatus {
   userId: number;
   isOnline: boolean;
 }
 
-// Updated interface for search results
 interface FriendSearchResult extends FriendProfile {
   friendshipStatus: "none" | "friends" | "request_sent" | "request_received";
 }
@@ -58,6 +59,7 @@ interface SocketMessage {
   senderId: number;
   content: string;
   createdAt: string;
+  readAt?: string | null;
 }
 
 interface ReadMessageEvent {
@@ -66,7 +68,9 @@ interface ReadMessageEvent {
 }
 
 interface TypingEvent {
-  fromId: number;
+  conversationId: number;
+  userId: number;
+  isTyping: boolean;
 }
 
 interface ConversationUser {
@@ -88,11 +92,25 @@ interface ConversationResponse {
   messages: { content: string }[];
 }
 
+interface MessageWithSender extends SocketMessage {
+  sender?: {
+    id: number;
+    username: string;
+    uniqueId?: string;
+    profile?: {
+      profilePicture?: string;
+    };
+  };
+}
 
 export default function ChatPage() {
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
   const [messages, setMessages] = useState<Record<number, Message[]>>({});
   const [draft, setDraft] = useState("");
+  const [typingUsers, setTypingUsers] = useState<Set<number>>(new Set());
+  const [friendProfiles, setFriendProfiles] = useState<Record<number, FriendProfile>>({});
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentMessages = activeChat ? messages[Number(activeChat.id)] || [] : [];
 
   const [view, setView] = useState<"chats" | "friends" | "requests">("chats");
@@ -103,6 +121,7 @@ export default function ChatPage() {
   const [friendsList, setFriendsList] = useState<FriendProfile[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [chats, setChats] = useState<ChatPreview[]>([]);
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
 
   const { socket } = useSocket();
   const { getToken, user } = useAuth();
@@ -112,6 +131,54 @@ export default function ChatPage() {
     chat.name.toLowerCase().includes(chatSearch.toLowerCase()) ||
     chat.id.includes(chatSearch)
   );
+
+  // Auto-scroll to bottom when messages change or typing indicator appears
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [currentMessages, typingUsers]);
+
+  // Get friend profile for read receipts - find the OTHER person in the current conversation
+  const getFriendInConversation = (): FriendProfile | null => {
+    if (!activeChat) return null;
+    
+    // Get the conversation ID
+    const conversationId = Number(activeChat.id);
+    
+    // Look through current messages to find the friend's senderId
+    const messagesForConv = messages[conversationId] || [];
+    const friendMessage = messagesForConv.find(msg => 
+      msg.sender === "friend" && msg.senderId && msg.senderId !== Number(user?.id)
+    );
+    
+    if (friendMessage && friendMessage.senderId) {
+      return friendProfiles[friendMessage.senderId] || null;
+    }
+    
+    // Fallback: try to extract from activeChat name
+    // Find friend profile that matches the chat name
+    const matchingFriend = Object.values(friendProfiles).find(friend => 
+      friend.username === activeChat.name
+    );
+    
+    return matchingFriend || null;
+  };
+
+  // Check if user is typing
+  const isUserTyping = (conversationId: number): boolean => {
+    if (!activeChat || Number(activeChat.id) !== conversationId) return false;
+    return typingUsers.size > 0;
+  };
+
+  // Get typing user names
+  const getTypingUserNames = (): string[] => {
+    return Array.from(typingUsers)
+      .map(userId => friendProfiles[userId]?.username)
+      .filter(Boolean);
+  };
 
   // --- Fetch all conversations for sidebar ---
   const fetchConversations = useCallback(async () => {
@@ -127,11 +194,24 @@ export default function ChatPage() {
 
       const data: ConversationResponse[] = await res.json();
       const convs: ChatPreview[] = data.map((c) => {
-        // find friend (not the current user)
         const currentUserId = user ? Number(user.id) : undefined;
         const other = 
         c.users?.find((u) => u.userId !== currentUserId)?.user ||
         c.participants?.find((p) => p.userId !== currentUserId)?.user;
+        
+        // Store friend profile for later use
+        if (other) {
+          setFriendProfiles(prev => ({
+            ...prev,
+            [other.id]: {
+              id: other.id,
+              username: other.username,
+              uniqueId: (other as ConversationUser['user'] & { uniqueId?: string }).uniqueId || "", 
+              profile: other.profile
+            }
+          }));
+        }
+
         return {
           id: String(c.id),
           name: other?.username || c.name || "Unknown",
@@ -144,7 +224,6 @@ export default function ChatPage() {
       console.error("❌ Failed to fetch conversations:", err);
     }
   }, [getToken, user]);
-
 
   // --- Fetch messages for a conversation ---
   const fetchMessages = useCallback(
@@ -163,14 +242,59 @@ export default function ChatPage() {
         }
         const data: SocketMessage[] = await res.json();
 
+        // Store friend profiles from message senders
+        data.forEach((msg: MessageWithSender) => {
+          if (msg.senderId !== Number(user?.id) && msg.sender) {
+            setFriendProfiles(prev => ({
+              ...prev,
+              [msg.sender!.id]: {
+                id: msg.sender!.id,
+                username: msg.sender!.username,
+                uniqueId: msg.sender!.uniqueId || "",
+                profile: msg.sender!.profile
+              }
+            }));
+          }
+        });
+
         setMessages((prev) => ({
           ...prev,
           [conversationId]: data.map((m) => ({
             id: m.id,
             sender: m.senderId === Number(user?.id) ? "me" : "friend",
             text: m.content,
+            readAt: m.readAt,
+            senderId: m.senderId,
           })),
         }));
+
+        // Mark messages as read when opening conversation
+        if (data.length > 0) {
+          data.forEach((msg) => {
+            if (msg.senderId !== Number(user?.id) && !msg.readAt) {
+              socket?.emit("message:read", { 
+                messageId: msg.id, 
+                conversationId: conversationId 
+              });
+            }
+          });
+          
+          // Clear unread status for this conversation
+          setChats(prev => {
+            const updatedChats = prev.map(chat => 
+              chat.id === String(conversationId) 
+                ? { ...chat, hasUnreadMessages: false }
+                : chat
+            );
+            return updatedChats;
+          });
+          
+          // Update unread counter
+          const hadUnreadMessages = chats.find(chat => chat.id === String(conversationId))?.hasUnreadMessages;
+          if (hadUnreadMessages) {
+            setUnreadMessagesCount(prev => Math.max(0, prev - 1));
+          }
+        }
 
         // Update chat preview
         if (data.length > 0) {
@@ -199,7 +323,7 @@ export default function ChatPage() {
         console.error("❌ Error fetching messages:", err);
       }
     },
-    [getToken, user]
+    [getToken, user, socket]
   );
 
   // --- Send message ---
@@ -210,15 +334,35 @@ export default function ChatPage() {
       content: draft,
     });
     setDraft("");
+    // Scroll to bottom after sending
+    setTimeout(scrollToBottom, 100);
   };
 
-  const handleTyping = () => {
+  // --- Handle typing ---
+  const handleTyping = (value: string) => {
+    setDraft(value);
+    
     if (!activeChat) return;
-    socket?.emit("typing:start", { toId: Number(activeChat.id) });
-    // optional: debounce a "typing:stop" after 1s of no input
+    
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
+    // Emit typing start
+    socket?.emit("typing:start", { 
+      conversationId: Number(activeChat.id)
+    });
+    
+    // Set timeout to emit typing stop after 1 second of no typing
+    typingTimeoutRef.current = setTimeout(() => {
+      socket?.emit("typing:stop", { 
+        conversationId: Number(activeChat.id)
+      });
+    }, 1000);
   };
 
-// --- Open chat with friend ---
+  // --- Open chat with friend ---
   const handleOpenChatFromFriend = async (friend: FriendProfile) => {
     try {
       const token = await getToken();
@@ -239,18 +383,18 @@ export default function ChatPage() {
         id: String(conversation.id),
         name: friend.username,
         lastMessage: conversation.messages?.[0]?.content || "",
+        profilePicture: friend.profile?.profilePicture,
       };
 
       setActiveChat(chatPreview);
       setView("chats");
       fetchMessages(conversation.id, friend.username);
-      await fetchConversations(); // ensure sidebar is up-to-date
+      await fetchConversations();
     } catch (err) {
       console.error("❌ Failed to open chat:", err);
     }
   };
 
-  // Use useCallback to prevent recreating this function on every render
   const updateFriendStatus = useCallback((userId: number, isOnline: boolean) => {
     setFriendsList(prev => prev.map(friend => 
       friend.id === userId 
@@ -281,7 +425,6 @@ export default function ChatPage() {
       });
 
       if (res.ok) {
-        // Optimistically update the search results to show "Pending"
         setFriendResults((prev) =>
           prev.map((f) =>
             f.id === toId ? { ...f, friendshipStatus: "request_sent" } : f
@@ -310,9 +453,7 @@ export default function ChatPage() {
       );
 
       if (res.ok) {
-        // Remove the request from the list
         setRequests((prev) => prev.filter((req) => req.id !== requestId));
-        // Add the new friend to the friends list
         const newFriend = requests.find((req) => req.id === requestId)?.from;
         if (newFriend) {
           setFriendsList((prev) => [...prev, { ...newFriend, isOnline: false }]);
@@ -340,7 +481,6 @@ export default function ChatPage() {
       );
 
       if (res.ok) {
-        // Remove the request from the list
         setRequests((prev) => prev.filter((req) => req.id !== requestId));
         console.log("Friend request rejected!");
       } else {
@@ -358,7 +498,6 @@ export default function ChatPage() {
       const token = await getToken();
       if (!token) return;
 
-      // Fetch friends
       const friendsRes = await fetch(
         `http://localhost:4000/users/${user.id}/friends`,
         {
@@ -374,7 +513,14 @@ export default function ChatPage() {
       const friendsData = await friendsRes.json();
       setFriendsList(friendsData);
 
-      // Fetch requests
+      // Store friend profiles
+      friendsData.forEach((friend: FriendProfile) => {
+        setFriendProfiles(prev => ({
+          ...prev,
+          [friend.id]: friend
+        }));
+      });
+
       const requestsRes = await fetch(
         `http://localhost:4000/friends/requests`,
         {
@@ -391,9 +537,8 @@ export default function ChatPage() {
       setRequests(requestsData);
     } catch (err) {
       console.error("❌ Failed to fetch friends and requests:", err);
-      // Add error state handling if needed
     }
-  }, [user, getToken]); // Add dependencies here
+  }, [user, getToken]);
 
   // Effects
   useEffect(() => {
@@ -401,7 +546,6 @@ export default function ChatPage() {
   }, [fetchConversations]);
 
   useEffect(() => {
-    // This effect runs whenever the search input changes
     const delay = setTimeout(() => {
       const fetchFriends = async () => {
         if (!friendSearch.trim()) {
@@ -428,33 +572,21 @@ export default function ChatPage() {
       };
 
       fetchFriends();
-    }, 300); // wait 300ms after user stops typing
+    }, 300);
 
     return () => clearTimeout(delay);
   }, [friendSearch, getToken]);
 
   useEffect(() => {
-    // This effect runs when the view changes or on initial load
     if (view === "friends" || view === "requests") {
       fetchFriendsAndRequests();
     }
-  }, [view, user, fetchFriendsAndRequests]); // Refetch when view changes or user loads
+  }, [view, user, fetchFriendsAndRequests]);
 
+  // Socket event listeners
   useEffect(() => {
-    if (!activeChat) return;
-    const msgs = messages[Number(activeChat.id)] || [];
-    msgs.forEach((msg) => {
-      if (msg.sender === "friend") {
-        socket?.emit("message:read", { messageId: msg.id });
-      }
-    });
-  }, [activeChat, messages]);
+    if (!socket) return;
 
-  // Replace the entire previous useEffect with this
-  useEffect(() => {
-    if (!socket) return; // wait until the singleton is ready
-
-    // Subscribe to events
     socket.on("friend:status:update", updateFriendStatus);
     socket.on("friends:initial:status", setInitialFriendStatuses);
 
@@ -467,15 +599,31 @@ export default function ChatPage() {
     });
 
     socket.on("message:read", ({ messageId, readerId }: ReadMessageEvent) => {
-      console.log(`Message ${messageId} read by ${readerId}`);
+      setMessages(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(convId => {
+          updated[Number(convId)] = updated[Number(convId)].map(msg =>
+            msg.id === messageId ? { ...msg, readAt: new Date().toISOString() } : msg
+          );
+        });
+        return updated;
+      });
     });
 
-    socket.on("typing:start", ({ fromId }: TypingEvent) => {
-      console.log(`User ${fromId} is typing...`);
+    socket.on("typing:start", ({ conversationId, userId }: TypingEvent) => {
+      if (activeChat && Number(activeChat.id) === conversationId) {
+        setTypingUsers(prev => new Set(prev).add(userId));
+      }
     });
 
-    socket.on("typing:stop", ({ fromId }: TypingEvent) => {
-      console.log(`User ${fromId} stopped typing.`);
+    socket.on("typing:stop", ({ conversationId, userId }: TypingEvent) => {
+      if (activeChat && Number(activeChat.id) === conversationId) {
+        setTypingUsers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(userId);
+          return newSet;
+        });
+      }
     });
 
     socket.on("disconnect", () => {
@@ -489,13 +637,55 @@ export default function ChatPage() {
           ...prev,
           [message.conversationId]: [
             ...chatMessages,
-          { id: message.id, sender: message.senderId === Number(user?.id) ? "me" : "friend", text: message.content },
-        ],
-      };
-    });
-  });
+            { 
+              id: message.id, 
+              sender: message.senderId === Number(user?.id) ? "me" : "friend", 
+              text: message.content,
+              readAt: message.readAt,
+              senderId: message.senderId,
+            },
+          ],
+        };
+      });
 
-    // Cleanup subscriptions on unmount
+      // Check if message should be marked as unread
+      const isMessageFromOther = message.senderId !== Number(user?.id);
+      const isConversationActive = activeChat && Number(activeChat.id) === message.conversationId;
+      const isUserInChatsView = view === "chats";
+      
+      // Update chat preview with the latest message and unread status
+      setChats(prev => {
+        const existingChatIndex = prev.findIndex(chat => chat.id === String(message.conversationId));
+        if (existingChatIndex !== -1) {
+          // Update existing chat with new last message
+          const updatedChats = [...prev];
+          const shouldMarkAsUnread = isMessageFromOther && (!isConversationActive || !isUserInChatsView);
+          
+          updatedChats[existingChatIndex] = {
+            ...updatedChats[existingChatIndex],
+            lastMessage: message.content,
+            hasUnreadMessages: shouldMarkAsUnread ? true : updatedChats[existingChatIndex].hasUnreadMessages
+          };
+          return updatedChats;
+        }
+        return prev;
+      });
+
+      // Update unread messages counter
+      if (isMessageFromOther && (!isConversationActive || !isUserInChatsView)) {
+        setUnreadMessagesCount(prev => prev + 1);
+      }
+
+      // Auto-mark as read if conversation is active and user is in chats view
+      if (activeChat && Number(activeChat.id) === message.conversationId && message.senderId !== Number(user?.id)) {
+        socket.emit("message:read", { 
+          messageId: message.id, 
+          conversationId: message.conversationId 
+        });
+      }
+    });
+
+    // Cleanup
     return () => {
       socket.off("friend:status:update");
       socket.off("friends:initial:status");
@@ -506,9 +696,22 @@ export default function ChatPage() {
       socket.off("typing:stop");
       socket.off("disconnect");
       socket.off("message:receive");
-      socket.off("message:sent");
     };
-  }, [socket, user, updateFriendStatus, setInitialFriendStatuses]);
+  }, [socket, user, updateFriendStatus, setInitialFriendStatuses, activeChat]);
+
+  // Cleanup typing timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Clear typing users when changing conversations
+  useEffect(() => {
+    setTypingUsers(new Set());
+  }, [activeChat]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -536,7 +739,7 @@ export default function ChatPage() {
         </h2>
         <ul className="space-y-2 flex-1 overflow-y-auto">
           {view === "chats" &&
-            (filteredChats.length > 0 ? ( // NEW: Added a check for filteredChats length
+            (filteredChats.length > 0 ? (
               filteredChats.map((chat) => (
                 <li
                   key={chat.id}
@@ -558,18 +761,22 @@ export default function ChatPage() {
                     }`}
                   >
                     <Avatar
-                    src={chat.profilePicture}
-                    username={chat.name}
-                    size="w-10 h-10"
-                  />
+                      src={chat.profilePicture}
+                      username={chat.name}
+                      size="w-10 h-10"
+                    />
                   </div>
                   <div className="flex flex-col overflow-hidden">
-                    <span className="font-semibold">{chat.name}</span>
+                    <span className={`font-semibold ${chat.hasUnreadMessages ? 'font-bold' : ''}`}>
+                      {chat.name}
+                    </span>
                     <span
                       className={`text-sm truncate ${
                         activeChat?.id === chat.id
                           ? "text-brand-white/80"
-                          : "text-foreground/70"
+                          : chat.hasUnreadMessages 
+                            ? "text-foreground font-semibold" 
+                            : "text-foreground/70"
                       }`}
                     >
                       {chat.lastMessage}
@@ -578,7 +785,6 @@ export default function ChatPage() {
                 </li>
               ))
             ) : (
-              // NEW: Added a message for no chats found
               <li className="text-sm text-foreground/70 text-center py-4">
                 No chats found.
               </li>
@@ -589,7 +795,7 @@ export default function ChatPage() {
               friendsList.map((friend) => (
                 <li
                   key={friend.id}
-                  onClick={() => handleOpenChatFromFriend(friend)}   // 👈 added here
+                  onClick={() => handleOpenChatFromFriend(friend)}
                   className="flex items-center gap-3 p-3.5 rounded-xl transition-all hover:bg-foreground/10 hover:shadow-sm cursor-pointer"
                 >
                   <div className="relative">
@@ -598,7 +804,6 @@ export default function ChatPage() {
                       username={friend.username}
                       size="w-10 h-10"
                     />
-                    {/* Online/Offline dot */}
                     <span
                       className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-background transition-colors ${
                         friend.isOnline ? "bg-green-500" : "bg-gray-400"
@@ -675,6 +880,7 @@ export default function ChatPage() {
           ].map(({ name, icon: Icon }) => {
             const isActive = view === name;
             const hasPendingRequests = name === "requests" && requests.length > 0;
+            const hasUnreadMessages = name === "chats" && unreadMessagesCount > 0;
 
             return (
               <button
@@ -683,6 +889,10 @@ export default function ChatPage() {
                   setView(name as "chats" | "friends" | "requests");
                   setChatSearch("");
                   setFriendSearch("");
+                  // Clear active chat when switching away from chats view
+                  if (name !== "chats") {
+                    setActiveChat(null);
+                  }
                 }}
                 className={`flex-1 flex flex-col items-center py-2 rounded-lg cursor-pointer transition-colors ${
                   isActive ? "bg-foreground/5" : ""
@@ -694,9 +904,13 @@ export default function ChatPage() {
                       isActive ? "text-brand-red" : "text-foreground/80"
                     }`}
                   />
-                  {/* Pending requests indicator */}
                   {hasPendingRequests && (
                     <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-yellow-400 border-2 border-background" />
+                  )}
+                  {hasUnreadMessages && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold border-2 border-background">
+                      {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
+                    </span>
                   )}
                 </div>
                 <span
@@ -706,7 +920,6 @@ export default function ChatPage() {
                 >
                   {name.charAt(0).toUpperCase() + name.slice(1)}
                 </span>
-                {/* Active indicator */}
                 {isActive && (
                   <div className="mt-1 w-6 h-0.5 bg-brand-red rounded-full" />
                 )}
@@ -716,55 +929,89 @@ export default function ChatPage() {
         </div>
       </aside>
 
-        {/* Chat window */}
-        <main className="flex-1 p-4 flex flex-col bg-background">
-          {view === "chats" ? (
-            activeChat ? (
-              <>
-                <div className="border-b border-foreground/20 pb-2 mb-4 font-bold text-lg text-brand-red">
-                  Chat with {activeChat.name}
-                </div>
-                <div className="flex-1 overflow-y-auto space-y-3 p-2">
-                  {currentMessages.map((msg) => (
+      {/* Chat window */}
+      <main className="flex-1 p-4 flex flex-col bg-background">
+        {view === "chats" ? (
+          activeChat ? (
+            <>
+              <div className="border-b border-foreground/20 pb-2 mb-4 font-bold text-lg text-brand-red">
+                Chat with {activeChat.name}
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-3 p-2">
+                {currentMessages.map((msg, index) => {
+                  const isLastMessage = index === currentMessages.length - 1;
+                  const isMyMessage = msg.sender === "me";
+                  const showReadReceipt = isMyMessage && isLastMessage && msg.readAt;
+                  const friendProfile = showReadReceipt ? getFriendInConversation() : null;
+
+                  return (
                     <div
                       key={msg.id}
-                      className={`flex ${msg.sender === "me" ? "justify-end" : "justify-start"}`}
+                      className={`flex ${isMyMessage ? "justify-end" : "justify-start"}`}
                     >
-                      <div
-                        className={`max-w-xs px-4 py-2 rounded-2xl text-sm shadow ${
-                          msg.sender === "me"
-                            ? "bg-brand-red text-brand-white rounded-br-sm"
-                            : "bg-foreground/10 text-foreground rounded-bl-sm"
-                        }`}
-                      >
-                        {msg.text}
+                      <div className="flex items-end gap-1">
+                        <div
+                          className={`max-w-xs px-4 py-2 rounded-2xl text-sm shadow ${
+                            isMyMessage
+                              ? "bg-brand-red text-brand-white rounded-br-sm"
+                              : "bg-foreground/10 text-foreground rounded-bl-sm"
+                          }`}
+                        >
+                          {msg.text}
+                        </div>
+                        {showReadReceipt && friendProfile && (
+                          <div className="mb-1">
+                            <Avatar
+                              src={friendProfile.profile?.profilePicture}
+                              username={friendProfile.username}
+                              size="w-4 h-4"
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
-                  ))}
-                </div>
-                <div className="mt-4 flex">
-                  <input
-                    type="text"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="Type a message..."
-                    className="flex-1 border border-foreground/30 rounded-lg p-2 bg-background"
-                  />
-                  <button
-                    onClick={handleSendMessage}
-                    className="ml-2 px-4 py-2 bg-brand-red text-brand-white rounded-lg"
-                  >
-                    Send
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-foreground/60">
-                Click a chat to start a conversation
+                  );
+                })}
+                
+                {/* Typing indicator */}
+                {isUserTyping(Number(activeChat.id)) && (
+                  <div className="flex justify-start">
+                    <div className="max-w-xs px-4 py-2 rounded-2xl text-sm bg-foreground/10 text-foreground rounded-bl-sm">
+                      <div className="flex space-x-1">
+                        <div className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                        <div className="w-2 h-2 bg-foreground/50 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Invisible element to scroll to */}
+                <div ref={messagesEndRef} />
               </div>
-            )
-          ) : view === "friends" ? (
-          // --- Friends view uses chat window for search results ---
+              <div className="mt-4 flex">
+                <input
+                  type="text"
+                  value={draft}
+                  onChange={(e) => handleTyping(e.target.value)}
+                  onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
+                  placeholder="Type a message..."
+                  className="flex-1 border border-foreground/30 rounded-lg p-2 bg-background"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  className="ml-2 px-4 py-2 bg-brand-red text-brand-white rounded-lg"
+                >
+                  Send
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-foreground/60">
+              Click a chat to start a conversation
+            </div>
+          )
+        ) : view === "friends" ? (
           <div className="flex-1 overflow-y-auto space-y-3">
             {loadingFriends && friendSearch && (
               <div className="text-center text-foreground/50">Searching...</div>
@@ -838,7 +1085,6 @@ export default function ChatPage() {
             ))}
           </div>
         ) : (
-          // --- Requests view ---
           <div className="flex-1 overflow-y-auto space-y-3">
             {requests.length === 0 && (
               <div className="flex-1 flex items-center justify-center opacity-70">
