@@ -17,6 +17,7 @@ interface ChatPreview {
   id: string;
   name: string;
   lastMessage: string;
+  profilePicture?: string;
 }
 
 interface Message {
@@ -53,9 +54,10 @@ interface FriendRequest {
 
 interface SocketMessage {
   id: string;
+  conversationId: number;
   senderId: number;
-  receiverId: number;
   content: string;
+  createdAt: string;
 }
 
 interface ReadMessageEvent {
@@ -67,8 +69,27 @@ interface TypingEvent {
   fromId: number;
 }
 
-export default function ChatPage() {
+interface ConversationUser {
+  userId: number;
+  user: {
+    id: number;
+    username: string;
+    profile?: {
+      profilePicture?: string;
+    };
+  };
+}
 
+interface ConversationResponse {
+  id: number;
+  name?: string | null;
+  users?: ConversationUser[];
+  participants?: ConversationUser[];
+  messages: { content: string }[];
+}
+
+
+export default function ChatPage() {
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
   const [messages, setMessages] = useState<Record<number, Message[]>>({});
   const [draft, setDraft] = useState("");
@@ -83,23 +104,56 @@ export default function ChatPage() {
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [chats, setChats] = useState<ChatPreview[]>([]);
 
-  const { socket } = useSocket(); // ✅ singleton socket
+  const { socket } = useSocket();
   const { getToken, user } = useAuth();
 
-  // NEW: Filtered chats based on search input
+  // Filter chats
   const filteredChats = chats.filter((chat) =>
     chat.name.toLowerCase().includes(chatSearch.toLowerCase()) ||
     chat.id.includes(chatSearch)
   );
 
-    // --- NEW: Fetch chat history ---
+  // --- Fetch all conversations for sidebar ---
+  const fetchConversations = useCallback(async () => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      const res = await fetch("http://localhost:4000/conversations", {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+      });
+      if (!res.ok) return;
+
+      const data: ConversationResponse[] = await res.json();
+      const convs: ChatPreview[] = data.map((c) => {
+        // find friend (not the current user)
+        const currentUserId = user ? Number(user.id) : undefined;
+        const other = 
+        c.users?.find((u) => u.userId !== currentUserId)?.user ||
+        c.participants?.find((p) => p.userId !== currentUserId)?.user;
+        return {
+          id: String(c.id),
+          name: other?.username || c.name || "Unknown",
+          lastMessage: c.messages[0]?.content || "",
+          profilePicture: other?.profile?.profilePicture,
+        };
+      });
+      setChats(convs);
+    } catch (err) {
+      console.error("❌ Failed to fetch conversations:", err);
+    }
+  }, [getToken, user]);
+
+
+  // --- Fetch messages for a conversation ---
   const fetchMessages = useCallback(
-    async (friendId: number) => {
+    async (conversationId: number, friendName?: string) => {
       try {
         const token = await getToken();
         if (!token) return;
 
-        const res = await fetch(`http://localhost:4000/messages/${friendId}`, {
+        const res = await fetch(`http://localhost:4000/conversations/${conversationId}/messages`, {
           headers: { Authorization: `Bearer ${token}` },
           credentials: "include",
         });
@@ -111,31 +165,30 @@ export default function ChatPage() {
 
         setMessages((prev) => ({
           ...prev,
-          [friendId]: data.map((m) => ({
+          [conversationId]: data.map((m) => ({
             id: m.id,
             sender: m.senderId === Number(user?.id) ? "me" : "friend",
             text: m.content,
           })),
         }));
 
-        // Update chats list preview
+        // Update chat preview
         if (data.length > 0) {
           const last = data[data.length - 1];
           setChats((prev) => {
-            const exists = prev.find((c) => c.id === String(friendId));
+            const exists = prev.find((c) => c.id === String(last.conversationId));
             if (exists) {
               return prev.map((c) =>
-                c.id === String(friendId)
+                c.id === String(last.conversationId)
                   ? { ...c, lastMessage: last.content }
                   : c
               );
             } else {
-              const friend = friendsList.find((f) => f.id === friendId);
               return [
                 ...prev,
                 {
-                  id: String(friendId),
-                  name: friend?.username || "Unknown",
+                  id: String(last.conversationId),
+                  name: friendName || "Unknown",
                   lastMessage: last.content,
                 },
               ];
@@ -146,16 +199,17 @@ export default function ChatPage() {
         console.error("❌ Error fetching messages:", err);
       }
     },
-    [getToken, user, friendsList]
+    [getToken, user]
   );
 
+  // --- Send message ---
   const handleSendMessage = () => {
     if (!draft.trim() || !activeChat) return;
     socket?.emit("message:send", {
-      toId: Number(activeChat.id),
+      conversationId: Number(activeChat.id),
       content: draft,
     });
-    setDraft(""); // clear input
+    setDraft("");
   };
 
   const handleTyping = () => {
@@ -164,19 +218,37 @@ export default function ChatPage() {
     // optional: debounce a "typing:stop" after 1s of no input
   };
 
-  // add this function inside ChatPage
-const handleOpenChatFromFriend = (friend: FriendProfile) => {
-  // Create a ChatPreview object from the FriendProfile
-  const chatPreview: ChatPreview = {
-    id: String(friend.id),
-    name: friend.username,
-    lastMessage: "", // you can fill with latest message later if you store it
-  };
+// --- Open chat with friend ---
+  const handleOpenChatFromFriend = async (friend: FriendProfile) => {
+    try {
+      const token = await getToken();
+      if (!token) return;
 
-  // Set as active chat and redirect back to chats view
-  setActiveChat(chatPreview);
-  setView("chats");
-};
+      const res = await fetch("http://localhost:4000/conversations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ participantId: friend.id }),
+        credentials: "include",
+      });
+
+      const conversation = await res.json();
+      const chatPreview: ChatPreview = {
+        id: String(conversation.id),
+        name: friend.username,
+        lastMessage: conversation.messages?.[0]?.content || "",
+      };
+
+      setActiveChat(chatPreview);
+      setView("chats");
+      fetchMessages(conversation.id, friend.username);
+      await fetchConversations(); // ensure sidebar is up-to-date
+    } catch (err) {
+      console.error("❌ Failed to open chat:", err);
+    }
+  };
 
   // Use useCallback to prevent recreating this function on every render
   const updateFriendStatus = useCallback((userId: number, isOnline: boolean) => {
@@ -325,6 +397,10 @@ const handleOpenChatFromFriend = (friend: FriendProfile) => {
 
   // Effects
   useEffect(() => {
+    fetchConversations();
+  }, [fetchConversations]);
+
+  useEffect(() => {
     // This effect runs whenever the search input changes
     const delay = setTimeout(() => {
       const fetchFriends = async () => {
@@ -408,23 +484,16 @@ const handleOpenChatFromFriend = (friend: FriendProfile) => {
 
     socket.on("message:receive", (message: SocketMessage) => {
       setMessages(prev => {
-        const chatMessages = prev[message.senderId] || [];
+        const chatMessages = prev[message.conversationId] || [];
         return {
           ...prev,
-          [message.senderId]: [...chatMessages, { id: message.id, sender: "friend", text: message.content }],
-        };
-      });
+          [message.conversationId]: [
+            ...chatMessages,
+          { id: message.id, sender: message.senderId === Number(user?.id) ? "me" : "friend", text: message.content },
+        ],
+      };
     });
-
-    socket.on("message:sent", (message: SocketMessage) => {
-      setMessages(prev => {
-        const chatMessages = prev[message.receiverId] || [];
-        return {
-          ...prev,
-          [message.receiverId]: [...chatMessages, { id: message.id, sender: "me", text: message.content }],
-        };
-      });
-    });
+  });
 
     // Cleanup subscriptions on unmount
     return () => {
@@ -439,7 +508,7 @@ const handleOpenChatFromFriend = (friend: FriendProfile) => {
       socket.off("message:receive");
       socket.off("message:sent");
     };
-  }, [socket, updateFriendStatus, setInitialFriendStatuses]);
+  }, [socket, user, updateFriendStatus, setInitialFriendStatuses]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -471,7 +540,10 @@ const handleOpenChatFromFriend = (friend: FriendProfile) => {
               filteredChats.map((chat) => (
                 <li
                   key={chat.id}
-                  onClick={() => setActiveChat(chat)}
+                  onClick={() => {
+                    setActiveChat(chat);
+                    fetchMessages(Number(chat.id), chat.name);
+                  }}
                   className={`flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all ${
                     activeChat?.id === chat.id
                       ? "bg-brand-red text-brand-white shadow-md border-l-4 border-brand-red"
@@ -485,7 +557,11 @@ const handleOpenChatFromFriend = (friend: FriendProfile) => {
                         : "bg-foreground/20 text-foreground"
                     }`}
                   >
-                    {chat.name.charAt(0).toUpperCase()}
+                    <Avatar
+                    src={chat.profilePicture}
+                    username={chat.name}
+                    size="w-10 h-10"
+                  />
                   </div>
                   <div className="flex flex-col overflow-hidden">
                     <span className="font-semibold">{chat.name}</span>
