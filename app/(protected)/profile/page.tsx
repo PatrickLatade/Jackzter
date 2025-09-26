@@ -9,6 +9,7 @@ import React, { forwardRef } from "react";
 import Cropper from "react-easy-crop";
 import { getCroppedImg } from "@/src/utils/cropImage";
 import { Area } from "react-easy-crop";
+import Swal from "sweetalert2";
 
 interface CustomInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   value?: string;
@@ -96,7 +97,12 @@ export default function ProfilePage() {
         birthday: form.birthday || undefined,
         profilePicture: form.profilePicture,
       });
-      alert("✅ Profile updated!");
+      Swal.fire({
+        icon: "success",
+        title: "Profile Updated",
+        text: "Your profile information has been saved!",
+        confirmButtonColor: "#d33"
+      });
       setForm((prev) => ({ ...prev, oldPassword: "", newPassword: "" }));
       } catch (err: unknown) {
         // If your updateMe() throws with a JSON { error: "..." }
@@ -152,10 +158,19 @@ export default function ProfilePage() {
 
     try {
       await updateMe({ profilePicture: fileUrl });
-      alert("✅ Profile picture updated!");
+      Swal.fire({
+        icon: "success",
+        title: "Profile Picture Updated",
+        text: "Your new profile picture has been saved.",
+        confirmButtonColor: "#d33"
+      });
     } catch (err) {
       console.error("Failed to save profile picture to DB:", err);
-      alert("❌ Failed to save profile picture in database");
+      Swal.fire({
+        icon: "error",
+        title: "Update Failed",
+        text: "❌ Failed to save profile picture in database"
+      });
     }
 
     setSelectedImage(null);

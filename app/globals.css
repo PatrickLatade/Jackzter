@@ -73,3 +73,18 @@ body {
   animation: fadeOut 1s forwards;
 }
 
+.swal2-popup {
+  background: #111 !important;  /* dark background */
+  color: #fff !important;       /* light text */
+}
+
+.swal2-title,
+.swal2-html-container {
+  color: #fff !important;
+}
+
+.swal2-confirm {
+  background-color: #d33 !important; /* red button */
+  color: #fff !important;
+}
+
