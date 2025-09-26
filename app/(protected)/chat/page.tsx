@@ -126,6 +126,11 @@ export default function ChatPage() {
   const { socket } = useSocket();
   const { getToken, user } = useAuth();
 
+  // Utility: recalc unread messages count
+  const recalcUnreadCount = (chats: ChatPreview[]) => {
+    return chats.filter(c => c.hasUnreadMessages).length;
+  };
+
   // Filter chats
   const filteredChats = chats.filter((chat) =>
     chat.name.toLowerCase().includes(chatSearch.toLowerCase()) ||
@@ -178,6 +183,20 @@ export default function ChatPage() {
     return Array.from(typingUsers)
       .map(userId => friendProfiles[userId]?.username)
       .filter(Boolean);
+  };
+
+  // In handleOpenChat
+  const handleOpenChat = (chat: ChatPreview) => {
+    setActiveChat(chat);
+    fetchMessages(Number(chat.id), chat.name);
+
+    setChats(prev => {
+      const updated = prev.map(c =>
+        c.id === chat.id ? { ...c, hasUnreadMessages: false } : c
+      );
+      setUnreadMessagesCount(recalcUnreadCount(updated));
+      return updated;
+    });
   };
 
   // --- Fetch all conversations for sidebar ---
@@ -279,13 +298,14 @@ export default function ChatPage() {
             }
           });
           
-          // Clear unread status for this conversation
+          // In fetchMessages (after marking messages as read)
           setChats(prev => {
-            const updatedChats = prev.map(chat => 
-              chat.id === String(conversationId) 
+            const updatedChats = prev.map(chat =>
+              chat.id === String(conversationId)
                 ? { ...chat, hasUnreadMessages: false }
                 : chat
             );
+            setUnreadMessagesCount(recalcUnreadCount(updatedChats));
             return updatedChats;
           });
           
@@ -654,21 +674,27 @@ export default function ChatPage() {
       const isUserInChatsView = view === "chats";
       
       // Update chat preview with the latest message and unread status
+      // In message:receive
       setChats(prev => {
         const existingChatIndex = prev.findIndex(chat => chat.id === String(message.conversationId));
+        const updatedChats = [...prev];
+
         if (existingChatIndex !== -1) {
-          // Update existing chat with new last message
-          const updatedChats = [...prev];
+          const isMessageFromOther = message.senderId !== Number(user?.id);
+          const isConversationActive = activeChat && Number(activeChat.id) === message.conversationId;
+          const isUserInChatsView = view === "chats";
+
           const shouldMarkAsUnread = isMessageFromOther && (!isConversationActive || !isUserInChatsView);
-          
+
           updatedChats[existingChatIndex] = {
             ...updatedChats[existingChatIndex],
             lastMessage: message.content,
-            hasUnreadMessages: shouldMarkAsUnread ? true : updatedChats[existingChatIndex].hasUnreadMessages
+            hasUnreadMessages: shouldMarkAsUnread || updatedChats[existingChatIndex].hasUnreadMessages
           };
-          return updatedChats;
         }
-        return prev;
+        // 👇 recalc count from chats
+        setUnreadMessagesCount(recalcUnreadCount(updatedChats));
+        return updatedChats;
       });
 
       // Update unread messages counter
@@ -746,6 +772,7 @@ export default function ChatPage() {
                   onClick={() => {
                     setActiveChat(chat);
                     fetchMessages(Number(chat.id), chat.name);
+                    handleOpenChat(chat);
                   }}
                   className={`flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all ${
                     activeChat?.id === chat.id
